@@ -10,8 +10,8 @@ def get_rff_encoder(embed_dim: int) -> GeoCLIP:
     return position_encoder
 
 
-def get_spherical_harmonics_encoder(embed_dim: int) -> LocationEncoderSatCLIP:
-    position_encoding = satclip_model.get_positional_encoding(legendre_polys=10)
+def get_spherical_harmonics_encoder(embed_dim: int, legendre_polys=10) -> LocationEncoderSatCLIP:
+    position_encoding = satclip_model.get_positional_encoding(legendre_polys=legendre_polys)
     siren_net = SirenNet(dim_in=position_encoding.embedding_dim, dim_hidden=embed_dim*2,
                          num_layers=2, dim_out=embed_dim)
     position_encoder = LocationEncoderSatCLIP(position_encoding, siren_net)

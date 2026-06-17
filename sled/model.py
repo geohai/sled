@@ -1,9 +1,18 @@
 from itertools import chain
 
 import lightning as L
-from torch import nn, optim
+from torch import nn, optim, float32, float64
 import torch
 
+"""Wrapper class for modality details for SLED training"""
+class ModalityDetails():
+    def __init__(self, modality_key: str, encoded_dimensions: int, encoder: nn.Module,
+                 coordinate_key: str, data_key: str):
+        self.modality_key = modality_key
+        self.encoded_dimensions = encoded_dimensions
+        self.encoder = encoder
+        self.coordinate_key = coordinate_key
+        self.data_key = data_key
 
 class SLEDTrainingFramework(L.LightningModule):
     """
@@ -14,11 +23,9 @@ class SLEDTrainingFramework(L.LightningModule):
 
     Parameters
     ----------
-    modality_encoders : dict[str, torch.nn.Module]
-        A dictionary of modality specific encoders, where the key is the mode name and the value is the mode's encoder
-    modality_dimensions: dict[str, int]
-        A dictionary of modality dimensions, where the key is the mode name and the value is the modality's embedding
-        dimensions
+    modality_details: list[ModalityDetails]
+        A list of all relevant modality details, including name, encoder, number of embedded dimensions, and the
+        relevant keys for coordinates and data (to enable easier use with existing datasets)
     position_encoder: torch.nn.Module
         A location encoder that takes in coordinates in the form of (lon, lat), then returns a location embedding
     lr: float
@@ -41,38 +48,49 @@ class SLEDTrainingFramework(L.LightningModule):
     Logging is integrated with Tensorboard via PyTorch Lightning.
     """
 
-    def __init__(self, modality_encoders: dict[str, torch.nn.Module],
-                 modality_dimensions: dict[str, int],
+    def __init__(self, modality_details: list[ModalityDetails],
                  position_encoder: torch.nn.Module, lr: float=0.0001,
-                 use_alignment_heads: bool = True, output_dim: int =768):
+                 use_alignment_heads: bool = True, output_dim: int =768,
+                 batch_size: int =128):
         super().__init__()
-        self.modalities = modality_encoders.keys()
-        self.modality_encoders = nn.ModuleDict(modality_encoders)
         self.use_alignment_heads = use_alignment_heads
-        alignment_heads = {}
+        self.modalities = []
 
-        for modality, modality_encoder in self.modality_encoders.items():
-            if modality_encoder is not None:
-                for param in modality_encoder.frozen_model.parameters():
+
+        modality_encoders = []
+        alignment_heads = []
+        self.mode_data_key = []
+        self.mode_coord_key = []
+        self.modality_dims = []
+        for modality in modality_details:
+            self.modalities.append(modality.modality_key)
+
+            if modality.encoder is not None:
+                for param in modality.encoder.parameters():
                     param.requires_grad = False
+            modality_encoders.append(modality.encoder)
 
             if self.use_alignment_heads:
-                head = torch.nn.Linear(output_dim, modality_dimensions[modality])
-                alignment_heads[modality] = head
+                head = torch.nn.Linear(output_dim, modality.encoded_dimensions)
+                alignment_heads.append(head)
 
-        if self.use_alignment_heads:
-            self.alignment_heads = nn.ModuleDict(alignment_heads)
+            self.mode_data_key.append(modality.data_key)
+            self.mode_coord_key.append(modality.coordinate_key)
+            self.modality_dims.append(modality.encoded_dimensions)
 
+        self.modality_encoders: nn.ModuleList = nn.ModuleList(modality_encoders)
+        self.alignment_heads: nn.ModuleList = nn.ModuleList(alignment_heads)
 
         self.position_encoder = position_encoder
 
         self.training_step_outputs = {}
         self.validation_step_outputs = {}
+        self.batch_size = batch_size
 
         self.lr = lr
 
         #hyperparamters!
-        self.save_hyperparameters(ignore=['modality_encoders', 'position_encoder'])
+        self.save_hyperparameters(ignore=['modality_encoders', 'position_encoder', 'modality_details'])
         self.automatic_optimization = False
 
     def common_step(self, batch, stage):
@@ -86,24 +104,28 @@ class SLEDTrainingFramework(L.LightningModule):
             # Not all batch sizes will have all modes, depending on the cycling setup of your combined dataloader
             # For example, max_size for a combined dataloader with 40k, 40k, and 20k samples per each mode will result
             # in the third mode being none for the last 20k samples per epoch.
-            if current_batch is not None:
-                mode_data = current_batch["mode_data"]
-                positions = current_batch["coords"]
 
-                if self.modality_encoders[modality] is None:
+            # If you need data in float64 format, coordinates flipped, etc., that should be handled through
+            # transform logic
+            if current_batch is not None:
+                mode_data = current_batch[self.mode_data_key[i]]
+                positions = current_batch[self.mode_coord_key[i]]
+
+                if self.modality_encoders[i] is None:
                     mode_embedding = mode_data
                 else:
-                    mode_embedding = self.modality_encoders[modality](mode_data)
+                    mode_embedding = self.modality_encoders[i](mode_data)
+
+                mode_embedding = mode_embedding.to(float32)
 
                 position_embedding = self.position_encoder(positions)
 
                 if self.use_alignment_heads:
-                    position_embedding = self.alignment_heads[modality](position_embedding)
+                    position_embedding = self.alignment_heads[i](position_embedding)
 
                 # This is a form of Matryoska loss: if we have an image embedding that's smaller than the position embedding
                 # space (such as a ViT-Small giving 384 vs an embedding space of 768), then we just contrast on the first 384
-                if (not self.modality_encoders[modality].trainable_layer
-                        and self.modality_encoders[modality].frozen_dim != position_embedding.shape[1]):
+                if (self.modality_dims[i] != position_embedding.shape[1]):
                     loss = nn.functional.mse_loss(mode_embedding, position_embedding[:,:,mode_embedding.shape[1]])
                 else:
                     loss = nn.functional.mse_loss(position_embedding, mode_embedding)
@@ -140,20 +162,20 @@ class SLEDTrainingFramework(L.LightningModule):
                 self.validation_step_outputs[modality].append(loss)
             else:
                 self.validation_step_outputs[modality] = [loss]
-        self.log("val_early_stopping_loss", losses["overall"], on_epoch=True, on_step=False)
+        self.log("val_early_stopping_loss", losses["overall"],
+                 on_epoch=True, on_step=False, batch_size=self.batch_size, logger=self.logger)
         return losses["overall"]
 
     def configure_optimizers(self):
         optimizers = []
-        for modality, encoder in self.modality_encoders.items():
+        for i, encoder in enumerate(self.modality_encoders):
 
             # considering position encoder and modality specific encoder
             if self.use_alignment_heads:
                 parameters = chain(self.position_encoder.parameters(),
-                                   self.alignment_heads[modality].parameters(),
-                                   encoder.parameters())
+                                   self.alignment_heads[i].parameters())
             else:
-                parameters = chain(self.position_encoder.parameters(), encoder.parameters())
+                parameters = chain(self.position_encoder.parameters())
 
             optimizers.append(optim.Adam(parameters, lr=self.lr))
         return optimizers
