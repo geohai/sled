@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from huggingface_hub import PyTorchModelHubMixin
 from rshf.satclip.model import Siren, exists, cast_tuple
+from rshf.geoclip.model import LocationEncoderCapsule
 from torch import Tensor
 from einops import rearrange
 
@@ -161,3 +162,28 @@ class SirenNet(nn.Module, PyTorchModelHubMixin):
                 x *= rearrange(mod, 'd -> () d')
 
         return self.last_layer(x)
+
+# RSHF's GeoCLIP implementation, upgraded to handle how the transformers' library passes around configs
+# for easy loading/saving in huggingface
+class LocationEncoderGeoCLIP(nn.Module, PyTorchModelHubMixin):
+    def __init__(self, sigma=None, input_size=2, encoded_size=256, dim=512):
+        super(LocationEncoderGeoCLIP, self).__init__()
+        self.sigma = sigma
+        self.input_size = input_size
+        self.encoded_size = encoded_size
+        self.dim = dim
+        self.n = len(self.sigma)
+
+        for i, s in enumerate(self.sigma):
+            self.add_module('LocEnc' + str(i), LocationEncoderCapsule(sigma=s, input_size=self.input_size,
+                                                                      encoded_size=self.encoded_size,
+                                                                      dim=self.dim))
+
+    def forward(self, location):
+        location = equal_earth_projection(location)
+        location_features = torch.zeros(location.shape[0], self.dim).to(location.device)
+
+        for i in range(self.n):
+            location_features += self._modules['LocEnc' + str(i)](location)
+
+        return location_features

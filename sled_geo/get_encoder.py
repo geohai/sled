@@ -1,11 +1,9 @@
-from rshf.geoclip import GeoCLIPConfig, GeoCLIP
-from sled.position_encoders import LocationEncoderSatCLIP, LocationEncoderUniGeoCLIP, SirenNet
+from sled_geo.position_encoders import LocationEncoderSatCLIP, LocationEncoderUniGeoCLIP, SirenNet, LocationEncoderGeoCLIP
 from rshf.satclip import model as satclip_model
 
-def get_rff_encoder(embed_dim: int) -> GeoCLIP:
-    config = GeoCLIPConfig(sigma=[2, 2 ** 2], input_size=2, encoded_size=int(embed_dim / 2),
+def get_rff_encoder(embed_dim: int) -> LocationEncoderGeoCLIP:
+    position_encoder = LocationEncoderGeoCLIP(sigma=[2, 2 ** 2], input_size=2, encoded_size=int(embed_dim / 2),
                            dim=embed_dim)
-    position_encoder = GeoCLIP(config)
 
     return position_encoder
 

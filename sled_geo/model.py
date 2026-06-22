@@ -1,7 +1,7 @@
 from itertools import chain
 
 import lightning as L
-from torch import nn, optim, float32, float64
+from torch import nn, optim, float32
 import torch
 
 """Wrapper class for modality details for SLED training"""
