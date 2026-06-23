@@ -8,7 +8,7 @@ This repository directly references the work available in this paper: LINK
 
 This module can be downloaded via pip
 
-    python3 -m pip install sled-geo
+    python3 -m pip install sled_geo
 
 ## Accessing pre-trained SLED location encoders
 You can get your own pre-trained SLED location encoder by doing the following:
