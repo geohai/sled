@@ -3,6 +3,7 @@ from itertools import chain
 import lightning as L
 from torch import nn, optim, float32
 import torch
+from loss import MSELoss
 
 """Wrapper class for modality details for SLED training"""
 class ModalityDetails():
@@ -13,6 +14,7 @@ class ModalityDetails():
         self.encoder = encoder
         self.coordinate_key = coordinate_key
         self.data_key = data_key
+
 
 class SLEDTrainingFramework(L.LightningModule):
     """
@@ -51,10 +53,11 @@ class SLEDTrainingFramework(L.LightningModule):
     def __init__(self, modality_details: list[ModalityDetails],
                  position_encoder: torch.nn.Module, lr: float=0.0001,
                  use_alignment_heads: bool = True, output_dim: int =768,
-                 batch_size: int =128):
+                 batch_size: int =128, criterion: torch.nn.Module = MSELoss()):
         super().__init__()
         self.use_alignment_heads = use_alignment_heads
         self.modalities = []
+        self.criterion = criterion
 
 
         modality_encoders = []
@@ -126,9 +129,9 @@ class SLEDTrainingFramework(L.LightningModule):
                 # This is a form of Matryoska loss: if we have an image embedding that's smaller than the position embedding
                 # space (such as a ViT-Small giving 384 vs an embedding space of 768), then we just contrast on the first 384
                 if (self.modality_dims[i] != position_embedding.shape[1]):
-                    loss = nn.functional.mse_loss(mode_embedding, position_embedding[:,:,mode_embedding.shape[1]])
+                    loss = self.criterion(mode_embedding, position_embedding[:,:,mode_embedding.shape[1]])
                 else:
-                    loss = nn.functional.mse_loss(position_embedding, mode_embedding)
+                    loss = self.criterion(position_embedding, mode_embedding)
 
                 if stage == "train":
                     # backprop to modality specific encoder and location encoder
